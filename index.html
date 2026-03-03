@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Bike Parkour Online - Teamwork</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.15.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.15.0/firebase-database-compat.js"></script>
+    <style>
+        body { margin: 0; background: #111; font-family: sans-serif; overflow: hidden; color: white; }
+        #ui-layer { position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 100; background: rgba(0,0,0,0.8); }
+        .box { background: #222; padding: 20px; border-radius: 10px; text-align: center; border: 2px solid #0f0; }
+        input { padding: 10px; margin: 10px; border-radius: 5px; border: none; width: 200px; }
+        button { padding: 10px 20px; background: #0f0; border: none; cursor: pointer; font-weight: bold; }
+        canvas { display: block; margin: 0 auto; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="box" id="auth-box">
+            <h2>BIKE PARKOUR ONLINE 🚴‍♂️</h2>
+            <input type="text" id="room-id" placeholder="Mã phòng (vd: 123)"><br>
+            <input type="text" id="user-id" placeholder="Tên của bạn"><br>
+            <button onclick="joinGame()">VÀO PHÒNG</button>
+            <p style="font-size: 12px; color: #888;">P1: Mũi tên | P2: WASD (nếu chơi 1 máy)<br>Online: Tự đồng bộ theo phòng</p>
+        </div>
+    </div>
+
+<script>
+    // --- CẤU HÌNH FIREBASE ---
+    const firebaseConfig = {
+        apiKey: "AIzaSyARz3WftjUZ_fRoHn4EcL6k9BGlLNiyMA",
+        databaseURL: "https://note-15380-default-rtdb.firebaseio.com/", 
+        projectId: "note-15380",
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    let myId, roomId, myRole; // role: 'p1' hoặc 'p2'
+    let isOnline = false;
+
+    // --- CẤU HÌNH GAME ---
+    const config = {
+        type: Phaser.AUTO,
+        width: 1000,
+        height: 600,
+        parent: 'game-container',
+        physics: { default: 'arcade', arcade: { gravity: { y: 1000 }, debug: false } },
+        scene: { preload: preload, create: create, update: update }
+    };
+
+    let game = new Phaser.Game(config);
+    let p1, p2, platforms, buttons, gates, cursors, keys;
+    let gateOpened = false;
+
+    function preload() {
+        this.load.image('bike', 'https://labs.phaser.io/assets/sprites/fuji.png'); // Tạm lấy hình này làm xe
+        this.load.image('block', 'https://labs.phaser.io/assets/sprites/platform.png');
+    }
+
+    function create() {
+        const self = this;
+        platforms = this.physics.add.staticGroup();
+        // Sàn nhà và chướng ngại vật
+        platforms.create(500, 580, 'block').setScale(3, 1).refreshBody();
+        platforms.create(200, 450, 'block').setScale(0.5, 0.5).refreshBody();
+        platforms.create(800, 450, 'block').setScale(0.5, 0.5).refreshBody();
+
+        // Nút bấm (Yellow)
+        buttons = this.physics.add.staticGroup();
+        let btn = buttons.create(200, 435, 'block').setScale(0.2, 0.2).setTint(0xffff00).refreshBody();
+
+        // Cửa chặn (Red)
+        gates = this.physics.add.staticGroup();
+        this.gate = gates.create(500, 480, 'block').setScale(0.1, 2.5).setTint(0xff0000).refreshBody();
+
+        // Player 1 (Green)
+        p1 = this.physics.add.sprite(100, 500, 'bike').setScale(0.5).setTint(0x00ff00);
+        p1.setCollideWorldBounds(true);
+        
+        // Player 2 (Blue)
+        p2 = this.physics.add.sprite(150, 500, 'bike').setScale(0.5).setTint(0x00ffff);
+        p2.setCollideWorldBounds(true);
+
+        // Va chạm
+        this.physics.add.collider([p1, p2], platforms);
+        this.gateCollider = this.physics.add.collider([p1, p2], gates);
+
+        // Điều khiển
+        cursors = this.input.keyboard.createCursorKeys();
+        keys = this.input.keyboard.addKeys('W,A,S,D');
+    }
+
+    function update() {
+        if (!isOnline) return;
+
+        // 1. Điều khiển nhân vật của mình
+        let me = (myRole === 'p1') ? p1 : p2;
+        let control = (myRole === 'p1') ? cursors : {left: keys.A, right: keys.D, up: keys.W};
+
+        if (control.left.isDown) {
+            me.setVelocityX(-200);
+            me.setFlipX(true);
+            me.setAngularVelocity(-100); // Bốc đầu lùi
+        } else if (control.right.isDown) {
+            me.setVelocityX(200);
+            me.setFlipX(false);
+            me.setAngularVelocity(100); // Bốc đầu tiến
+        } else {
+            me.setVelocityX(0);
+            me.setAngularVelocity(0);
+        }
+
+        if ((control.up.isDown || (control.W && control.W.isDown)) && me.body.touching.down) {
+            me.setVelocityY(-500);
+        }
+
+        // 2. Gửi dữ liệu lên Firebase
+        db.ref(`rooms/${roomId}/${myRole}`).set({
+            x: me.x, y: me.y, angle: me.angle, flip: me.flipX
+        });
+
+        // 3. Kiểm tra đè nút (Chỉ P1 hoặc P2 đè là cửa mở cho cả 2)
+        let pressing = false;
+        buttons.children.entries.forEach(btn => {
+            if (this.physics.overlap(p1, btn) || this.physics.overlap(p2, btn)) {
+                pressing = true;
+            }
+        });
+
+        // Đồng bộ trạng thái cửa lên Firebase (Người cầm máy chủ trì sẽ gửi)
+        if (myRole === 'p1') {
+            db.ref(`rooms/${roomId}/gate`).set(pressing);
+        }
+
+        // 4. Cập nhật trạng thái cửa từ Firebase
+        db.ref(`rooms/${roomId}/gate`).on('value', (s) => {
+            let open = s.val();
+            if (open) {
+                this.gate.disableBody(true, true);
+            } else {
+                this.gate.enableBody(false, 500, 480, true, true);
+            }
+        });
+    }
+
+    // --- HỆ THỐNG ONLINE ---
+    function joinGame() {
+        roomId = document.getElementById('room-id').value;
+        myId = document.getElementById('user-id').value;
+        if (!roomId || !myId) return alert("Nhập đủ mã phòng và tên!");
+
+        const roomRef = db.ref(`rooms/${roomId}`);
+        
+        roomRef.once('value', (snapshot) => {
+            const data = snapshot.val();
+            if (!data || !data.p1) {
+                myRole = 'p1';
+            } else {
+                myRole = 'p2';
+            }
+
+            // Bắt đầu lắng nghe đối phương
+            const partnerRole = (myRole === 'p1') ? 'p2' : 'p1';
+            const partnerSprite = (myRole === 'p1') ? p2 : p1;
+
+            roomRef.child(partnerRole).on('value', (s) => {
+                const d = s.val();
+                if (d) {
+                    partnerSprite.x = d.x;
+                    partnerSprite.y = d.y;
+                    partnerSprite.angle = d.angle;
+                    partnerSprite.setFlipX(d.flip);
+                }
+            });
+
+            document.getElementById('ui-layer').style.display = 'none';
+            isOnline = true;
+        });
+    }
+</script>
+</body>
+</html>
